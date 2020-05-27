@@ -17,8 +17,13 @@ def build_part_vgg19(img_input,params_dir='vgg19.npy'):
     '''
     def conv_layer(x, name):
         with tf.variable_scope(name):
-            f = tf.constant(params[name][0],dtype='float32')
-            b = tf.constant(params[name][1],dtype='float32')
+            if 1:
+                f = tf.constant(params[name][0],dtype='float32')
+                #b = tf.constant(params[name][1],dtype='float32')
+            else:
+                f = tf.constant(np.random.uniform(size=params[name][0].shape, low=-.1, high=.1), dtype='float32')
+
+            b = tf.constant(np.ones(params[name][1].shape) * .5, dtype='float32')
 
             conv = tf.nn.conv2d(input=x, filter=f,strides=[1,1,1,1],padding='SAME')
             conv_biased = tf.nn.bias_add(conv, b)
@@ -77,7 +82,8 @@ def main():
     args = parser.parse_args()
 
     content_img = Image.open(args.content_img)
-    img_width,img_height = content_img.size
+    #img_width,img_height = content_img.size
+    img_width, img_height = 256, 256
     content_img = content_img.resize((img_width,img_height))
     style_img = Image.open(args.style_img).resize((img_width,img_height))
 
@@ -103,7 +109,8 @@ def main():
     # reshape to NHWC
     content_img = np.reshape(content_img,newshape=(-1,img_height,img_width,3))
     style_img = np.reshape(style_img,newshape=(-1,img_height,img_width,3))
-    input_img = np.reshape(input_img,newshape=(-1,img_height,img_width,3))
+    #input_img = np.reshape(input_img,newshape=(-1,img_height,img_width,3))
+    input_img = np.reshape(content_img,newshape=(-1,img_height,img_width,3))
 
     # GPU Config
     tf_config = tf.ConfigProto()
@@ -147,30 +154,57 @@ def main():
     def mse(x,y):
         return tf.losses.mean_squared_error(labels=y,predictions=x)
 
-    loss_content = args.content_weight*mse(conv4_2,content_maps)
-    loss_style = args.style_weight*(style_weights[0]*mse(gram_matrix(conv1_1),style_maps[0]) + \
-                                    style_weights[1]*mse(gram_matrix(conv2_1),style_maps[1]) + \
-                                    style_weights[2]*mse(gram_matrix(conv3_1),style_maps[2]) + \
-                                    style_weights[3]*mse(gram_matrix(conv4_1),style_maps[3]) + \
-                                    style_weights[4]*mse(gram_matrix(conv5_1),style_maps[4]) )
-    loss = loss_content+ loss_style
+    loss_content = args.content_weight * mse(conv4_2,content_maps)
+    loss_style = args.style_weight* (style_weights[0]*mse(gram_matrix(conv1_1),style_maps[0]) + \
+                                     style_weights[1]*mse(gram_matrix(conv2_1),style_maps[1]) + \
+                                     style_weights[2]*mse(gram_matrix(conv3_1),style_maps[2]) + \
+                                     style_weights[3]*mse(gram_matrix(conv4_1),style_maps[3]) + \
+                                     style_weights[4]*mse(gram_matrix(conv5_1),style_maps[4]) )
+    loss = loss_content + loss_style
 
     # Train
-    opt = tf.train.AdamOptimizer(args.lr_rate).minimize(loss,var_list=[vgg_input])
+    if 0:
+        opt = tf.train.AdamOptimizer(args.lr_rate).minimize(loss,var_list=[vgg_input])
 
-    sess.run(tf.global_variables_initializer())
-    sess.run(vgg_input.assign(input_img))
-    for ep in range(args.epoch+1):
-        _, cur_loss,s_loss,c_loss,img = sess.run([opt,loss,loss_style, loss_content, vgg_input])
-        if ep%10==0:
-            print('[*] Epoch %d  total_loss=%f, style_loss=%f, content_loss=%f'%(ep,cur_loss,s_loss,c_loss))
-        if ep%100==0:
-            saved_img = np.array(img[0])
-            saved_img = np.where(saved_img<=255,saved_img,255)
-            saved_img = np.where(saved_img>=0,saved_img,0)
-            saved_img = Image.fromarray(saved_img.astype(np.uint8),'RGB')
-            output_name = args.output+'_%d'%(ep)+'.jpg'
-            saved_img.save(output_name)
-            print("[!] image saved as %s\n"%output_name)
+        sess.run(tf.global_variables_initializer())
+        sess.run(vgg_input.assign(input_img))
+        for ep in range(args.epoch+1):
+            _, cur_loss,s_loss,c_loss,img = sess.run([opt,loss,loss_style, loss_content, vgg_input])
+            if ep%10==0:
+                print('[*] Epoch %d  total_loss=%f, style_loss=%f, content_loss=%f'%(ep,cur_loss,s_loss,c_loss))
+            if ep%10==0:
+                saved_img = np.array(img[0])
+                saved_img = np.where(saved_img<=255,saved_img,255)
+                saved_img = np.where(saved_img>=0,saved_img,0)
+                saved_img = Image.fromarray(saved_img.astype(np.uint8),'RGB')
+                output_name = args.output+'_%d'%(ep)+'.jpg'
+                saved_img.save(output_name)
+                print("[!] image saved as %s\n"%output_name)
+    else:
+        optimizer = tf.contrib.opt.ScipyOptimizerInterface(
+              loss,
+              method='L-BFGS-B',
+              options={
+                    'maxiter': args.epoch,
+                    'disp': 5,
+                    #'gtol': 1e-10,
+                    #'eps': 1e-8,
+                    'maxls': 20,
+                    'maxcor': 10,
+                    })
+
+        sess.run(tf.global_variables_initializer())
+        sess.run(vgg_input.assign(input_img))
+        optimizer.minimize(sess)
+
+        img = sess.run(vgg_input)
+        saved_img = np.array(img[0])
+        saved_img = np.clip(saved_img, 0, 255)
+        saved_img = Image.fromarray(saved_img.astype(np.uint8),'RGB')
+        output_name = args.output+'_stylized'+'.jpg'
+        saved_img.save(output_name)
+        print("[!] image saved as %s\n"%output_name)
+        
+
 if __name__=='__main__':
     main()
